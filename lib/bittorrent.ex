@@ -17,9 +17,11 @@ defmodule Bittorrent.CLI do
 end
 
 defmodule Bencode do
-  def decode(<<"l"::binary, rest::binary>>) do
-    decode_list(rest)
+  def decode(<<"d"::binary, rest::binary>>) do
+    decode_object(rest)
   end
+
+  def decode(<<"l"::binary, rest::binary>>), do: decode_list(rest)
 
   def decode(<<"i"::binary, rest::binary>>) do
     binary_data = :binary.bin_to_list(rest)
@@ -61,5 +63,19 @@ defmodule Bencode do
   defp decode_list(encoded_items, result) do
     {decoded_item, rest} = decode(encoded_items)
     decode_list(rest, [decoded_item | result])
+  end
+
+  defp decode_object(encoded_items, key \\ nil, result \\ %{})
+
+  defp decode_object(<<"e"::binary, rest::binary>>, nil, result), do: {result, rest}
+
+  defp decode_object(encoded_items, nil, result) do
+    {decoded_key, rest} = decode(encoded_items)
+    decode_object(rest, decoded_key, result)
+  end
+
+  defp decode_object(encoded_items, key, result) do
+    {decoded_value, rest} = decode(encoded_items)
+    decode_object(rest, nil, Map.put(result, key, decoded_value))
   end
 end
