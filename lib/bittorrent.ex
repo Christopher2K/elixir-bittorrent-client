@@ -17,6 +17,12 @@ defmodule Bittorrent.CLI do
 end
 
 defmodule Bencode do
+  def decode(<<"i"::binary, rest::binary>>) do
+    <<mb_number::binary-size(rest |> byte_size |> Kernel.-(1)), "e"::binary>> = rest
+    {number, _} = Integer.parse(mb_number)
+    number
+  end
+
   def decode(encoded_value) when is_binary(encoded_value) do
     binary_data = :binary.bin_to_list(encoded_value)
 
