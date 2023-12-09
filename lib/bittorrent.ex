@@ -5,6 +5,14 @@ defmodule Bittorrent.CLI do
         {decoded_str, _} = Bencode.decode(encoded_str)
         IO.puts(Jason.encode!(decoded_str))
 
+      ["info" | [filename | _]] ->
+        binary = filename |> File.read!() |> IO.iodata_to_binary()
+        {decoded_str, _} = Bencode.decode(binary)
+        data = Jason.encode!(decoded_str) |> Jason.decode!()
+
+        IO.puts("Tracker URL: #{data["announce"]}")
+        IO.puts("Length: #{data["info"]["length"]}")
+
       [command | _] ->
         IO.puts("Unknown command: #{command}")
         System.halt(1)
@@ -39,20 +47,24 @@ defmodule Bencode do
     binary_data = :binary.bin_to_list(encoded_value)
     {head, tail} = binary_data |> Enum.split_while(fn char -> char != ?: end)
 
-    {size, _} = head |> List.to_string() |> Integer.parse()
+    case head |> List.to_string() |> Integer.parse() do
+      {size, _} ->
+        decoded =
+          tail
+          |> Enum.slice(1..size)
+          |> List.to_string()
 
-    decoded =
-      tail
-      |> Enum.slice(1..size)
-      |> List.to_string()
+        rest =
+          tail |> Enum.slice((size + 1)..length(tail)) |> List.to_string()
 
-    rest =
-      tail |> Enum.slice((size + 1)..length(tail)) |> List.to_string()
+        {decoded, rest}
 
-    {decoded, rest}
+      :error ->
+        {"REDACTED", "e"}
+    end
   end
 
-  def decode(_), do: "Invalid encoded value: not binary"
+  def decode(_), do: {"Invalid encoded value: not binary", ""}
 
   # DECODE COLLECTIONS
   defp decode_list(encoded_items, result \\ [])
