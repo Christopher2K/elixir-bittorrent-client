@@ -10,8 +10,16 @@ defmodule Bittorrent.CLI do
         {decoded_str, _} = Bencode.decode(binary)
         data = Jason.encode!(decoded_str) |> Jason.decode!()
 
+        info_map = data["info"]
+        bencoded_info_map = Bencode.encode(info_map)
+
+        hex_digest =
+          :crypto.hash(:sha, <<bencoded_info_map::binary>>)
+          |> Base.encode16(case: :lower)
+
         IO.puts("Tracker URL: #{data["announce"]}")
         IO.puts("Length: #{data["info"]["length"]}")
+        IO.puts("Info Hash: #{hex_digest}")
 
       [command | _] ->
         IO.puts("Unknown command: #{command}")
@@ -25,6 +33,36 @@ defmodule Bittorrent.CLI do
 end
 
 defmodule Bencode do
+  ## ENCODE
+  def encode(map) when is_map(map) do
+    encoded_map_entries =
+      map
+      |> Enum.flat_map(fn {k, v} -> [encode(k), encode(v)] end)
+      |> Enum.reduce(<<>>, fn item, acc -> <<acc::binary, item::binary>> end)
+
+    <<"d"::binary, encoded_map_entries::binary, "e"::binary>>
+  end
+
+  def encode(list) when is_list(list) do
+    encoded_list_items = list |> Enum.map(&encode/1) |> Enum.join()
+    <<"l"::binary, encoded_list_items::binary, "e"::binary>>
+  end
+
+  def encode(data) when is_integer(data),
+    do: <<"i"::binary, "#{Integer.to_string(data)}"::binary, "e"::binary>>
+
+  def encode(data) when is_binary(data) do
+    case Base.decode16(data, case: :lower) do
+      {:ok, binary} ->
+        size = Integer.floor_div(String.length(data), 2)
+        <<"#{size}:"::binary, binary::binary>>
+
+      :error ->
+        <<"#{String.length(data)}:#{data}"::binary>>
+    end
+  end
+
+  ## DECODE
   def decode(<<"d"::binary, rest::binary>>) do
     decode_object(rest)
   end
@@ -38,7 +76,7 @@ defmodule Bencode do
     {decoded, _} = head |> List.to_string() |> Integer.parse()
 
     rest =
-      tail |> Enum.slice(1..-1) |> List.to_string()
+      tail |> Enum.slice(1..-1) |> :binary.list_to_bin()
 
     {decoded, rest}
   end
@@ -47,20 +85,30 @@ defmodule Bencode do
     binary_data = :binary.bin_to_list(encoded_value)
     {head, tail} = binary_data |> Enum.split_while(fn char -> char != ?: end)
 
-    case head |> List.to_string() |> Integer.parse() do
-      {size, _} ->
-        decoded =
-          tail
-          |> Enum.slice(1..size)
-          |> List.to_string()
+    {size, _} = head |> List.to_string() |> Integer.parse()
+
+    decoded_bin =
+      tail
+      |> Enum.slice(1..size)
+      |> :binary.list_to_bin()
+
+    case String.valid?(decoded_bin) do
+      true ->
+        decoded = decoded_bin
 
         rest =
-          tail |> Enum.slice((size + 1)..length(tail)) |> List.to_string()
+          tail |> Enum.slice((size + 1)..length(tail)) |> :binary.list_to_bin()
 
         {decoded, rest}
 
-      :error ->
-        {"REDACTED", "e"}
+      false ->
+        # Non UTF-8 values are converted to Base16 so we can count how many char
+        # we have to skip
+        base16_tail = tail |> :binary.list_to_bin() |> Base.encode16(case: :lower)
+        # Since this is hex, size of 1 = 2bytes
+        decoded = base16_tail |> String.slice(2..(size * 2 + 1))
+        rest = base16_tail |> String.slice((size * 2 + 2)..-1) |> Base.decode16!(case: :lower)
+        {decoded, rest}
     end
   end
 
