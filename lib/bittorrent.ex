@@ -6,18 +6,10 @@ defmodule Bittorrent.CLI do
         IO.puts(Jason.encode!(decoded_str))
 
       ["info" | [filename | _]] ->
-        binary = filename |> File.read!() |> IO.iodata_to_binary()
-        {decoded_str, _} = Bencode.decode(binary)
-        data = Jason.encode!(decoded_str) |> Jason.decode!()
-
-        info_map = data["info"]
-        bencoded_info_map = Bencode.encode(info_map)
-
-        hex_digest =
-          :crypto.hash(:sha, <<bencoded_info_map::binary>>)
-          |> Base.encode16(case: :lower)
-
+        data = Bittorrent.Utils.decode_torrent_meta(filename)
         piece_length = data["info"]["piece length"]
+
+        hex_digest = Bittorrent.Utils.get_torrent_info_hash(data, data: :hex)
 
         IO.puts("Tracker URL: #{data["announce"]}")
         IO.puts("Length: #{data["info"]["length"]}")
@@ -28,6 +20,46 @@ defmodule Bittorrent.CLI do
 
         for hash <- piece_hashes do
           IO.puts(hash)
+        end
+
+      ["peers" | [filename | _]] ->
+        torrent_data = Bittorrent.Utils.decode_torrent_meta(filename)
+
+        info_hash =
+          torrent_data
+          |> Bittorrent.Utils.get_torrent_info_hash()
+          |> URI.encode()
+
+        query =
+          %{
+            "info_hash" => info_hash,
+            "peer_id" => "00734005547258018116",
+            "port" => "6881",
+            "uploaded" => "0",
+            "downloaded" => "0",
+            "left" => Integer.to_string(torrent_data["info"]["length"]),
+            "compact" => "1"
+          }
+          |> Enum.map(fn {key, value} ->
+            key <> "=" <> value
+          end)
+          |> Enum.join("&")
+
+        url = torrent_data["announce"] <> "?" <> query
+
+        {:ok, response} = Req.get(url)
+
+        response_data =
+          response.body
+          |> Bencode.decode()
+          |> elem(0)
+          |> Jason.encode!()
+          |> Jason.decode!()
+
+        peers = response_data["peers"]
+
+        for peer <- Bittorrent.Utils.decode_peers(peers) do
+          IO.puts(peer)
         end
 
       [command | _] ->
@@ -42,9 +74,58 @@ defmodule Bittorrent.CLI do
 end
 
 defmodule Bittorrent.Utils do
+  alias ElixirSense.Core.Bitstring
+
+  @doc """
+  Get pieces hash from the "pieces" stringified hex binary
+  """
   def get_piece_hashes(pieces) do
     {:ok, binary} = pieces |> Base.decode16(case: :lower)
     do_get_piece_hashes(binary)
+  end
+
+  @doc """
+  Return a map container all torrent metadata
+  """
+  def decode_torrent_meta(filename) do
+    binary = filename |> File.read!() |> IO.iodata_to_binary()
+    {decoded_str, _} = Bencode.decode(binary)
+    Jason.encode!(decoded_str) |> Jason.decode!()
+  end
+
+  def get_torrent_info_hash(%{"info" => info_map}, opts \\ []) do
+    data = opts[:data]
+
+    bencoded_info_map = Bencode.encode(info_map)
+
+    sha_hash = :crypto.hash(:sha, <<bencoded_info_map::binary>>)
+
+    case data do
+      :hex -> sha_hash |> Base.encode16(case: :lower)
+      _ -> sha_hash
+    end
+  end
+
+  @doc """
+  Peers contains non UTF-8 chars and so, is in HEX format because of
+  how my Bencoder works
+  """
+  def decode_peers(peers) do
+    raw_peers =
+      peers
+      |> Base.decode16!(case: :lower)
+
+    raw_peers
+    |> :binary.bin_to_list()
+    |> Enum.chunk_every(6)
+    |> Enum.map(fn bytes ->
+      <<ip::binary-size(4), port::binary-size(2)>> = bytes |> :binary.list_to_bin()
+      <<a::8, b::8, c::8, d::8>> = ip
+
+      ip_value = :inet.ntoa({a, b, c, d}) |> :binary.list_to_bin()
+      port_value = :binary.decode_unsigned(port, :big)
+      "#{ip_value}:#{port_value}"
+    end)
   end
 
   defp do_get_piece_hashes(pieces, result \\ [])
