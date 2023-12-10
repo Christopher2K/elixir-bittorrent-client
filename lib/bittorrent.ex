@@ -17,9 +17,18 @@ defmodule Bittorrent.CLI do
           :crypto.hash(:sha, <<bencoded_info_map::binary>>)
           |> Base.encode16(case: :lower)
 
+        piece_length = data["info"]["piece length"]
+
         IO.puts("Tracker URL: #{data["announce"]}")
         IO.puts("Length: #{data["info"]["length"]}")
         IO.puts("Info Hash: #{hex_digest}")
+        IO.puts("Piece Length: #{piece_length}")
+        IO.puts("Piece Hashes:")
+        piece_hashes = data["info"]["pieces"] |> Bittorrent.Utils.get_piece_hashes()
+
+        for hash <- piece_hashes do
+          IO.puts(hash)
+        end
 
       [command | _] ->
         IO.puts("Unknown command: #{command}")
@@ -32,8 +41,28 @@ defmodule Bittorrent.CLI do
   end
 end
 
+defmodule Bittorrent.Utils do
+  def get_piece_hashes(pieces) do
+    {:ok, binary} = pieces |> Base.decode16(case: :lower)
+    do_get_piece_hashes(binary)
+  end
+
+  defp do_get_piece_hashes(pieces, result \\ [])
+  defp do_get_piece_hashes(<<>>, result), do: Enum.reverse(result)
+
+  defp do_get_piece_hashes(pieces, result) do
+    <<piece::binary-size(20), rest::binary>> = pieces
+    encoded_piece = piece |> Base.encode16(case: :lower)
+    do_get_piece_hashes(rest, [encoded_piece | result])
+  end
+end
+
 defmodule Bencode do
-  ## ENCODE
+  @doc """
+  Bencode a map, a list, a number or a string
+  This function returns a binary since nothing guarantees that the context will be UTF-8 friendly
+  For strings, it does accept UTF-8 string or Hex representation for non UTF-8 chars
+  """
   def encode(map) when is_map(map) do
     encoded_map_entries =
       map
